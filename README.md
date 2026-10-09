@@ -48,11 +48,8 @@
 ```text
 PitchNest-Mobile/
 ├── assets/                # App icons, splash screens, adaptive icons
-├── docs/                  # App Store compliance, legal audits, build guides
-│   ├── APP_STORE_COMPLIANCE.md
-│   ├── LEGAL_AUDIT.md
-│   ├── MOBILE_BUILD_GUIDE.md
-│   └── STORE_LISTING.md
+├── docs/
+│   └── STORE_SUBMISSION.md # App Store & Play submission runbook (compliance, privacy forms, steps)
 ├── scripts/
 │   └── smoke-test-api.mjs # Production API connectivity smoke test
 ├── src/
