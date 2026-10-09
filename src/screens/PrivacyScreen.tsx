@@ -12,14 +12,24 @@ export default function PrivacyScreen() {
       </LegalSection>
       <LegalSection title="Information we collect">
         Account data (name, email, hashed password), profile data (startup name, industry, goals), pitch decks,
-        session transcripts, AI evaluation reports, and optional camera/audio during live pitch sessions.
+        session transcripts, AI evaluation reports, and any AI responses you choose to report to us.
+      </LegalSection>
+      <LegalSection title="Microphone and camera">
+        Your voice is streamed during a live pitch so it can be transcribed and answered; the mobile app does not
+        store audio recordings. The optional camera shows a private preview on your device only — video is never
+        recorded, uploaded, or sent to AI.
       </LegalSection>
       <LegalSection title="AI processing">
-        We use Google Gemini to power live conversations and evaluations. Voice, text, camera frames, and deck
-        content may be sent to Google&apos;s APIs. AI responses are generated — not real investors or financial advice.
+        Live conversations and evaluations are generated with Microsoft Azure OpenAI, and speech is transcribed and
+        voiced with Microsoft Azure AI Speech. Your words, transcript, startup details, and deck text are sent to these
+        services to produce responses. Microsoft does not use this data to train its models. AI responses are
+        generated — not real investors or financial advice.
       </LegalSection>
       <LegalSection title="Third-party services">
-        Supabase (database and storage), Google Gemini (AI), Render (backend API), Vercel (web legal pages).
+        Microsoft Azure (AI and speech), Supabase (database and file storage), Amazon Web Services and Render
+        (backend hosting), Vercel (website), Resend (account emails), and Google Docs Viewer (to display PDF
+        deck slides in the app). If market research is enabled, your startup name
+        and description may be sent to a web search provider to find competitors.
       </LegalSection>
       <LegalSection title="Your choices">
         Update profile in Settings, revoke camera/microphone in device settings, or delete your account in Profile.

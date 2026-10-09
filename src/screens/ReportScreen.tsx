@@ -1,12 +1,20 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { RouteProp, useRoute } from '@react-navigation/native';
 import { Screen } from '../components/Screen';
 import { ScoreBars } from '../components/ScoreBars';
+import { ReportAiSheet } from '../components/ReportAiSheet';
 import { colors, radius, spacing } from '../constants/theme';
 import { useAuth } from '../contexts/AuthContext';
 import { getOverallScore } from '../lib/utils';
-import type { Session } from '../types';
+import type { NextStep, Session } from '../types';
+
+// next_steps arrive as { title, desc } objects (plain strings on old sessions).
+// Rendering an object directly crashes React Native.
+function nextStepText(item: string | NextStep): string {
+  if (typeof item === 'string') return item;
+  return [item.title, item.desc].filter(Boolean).join(' — ');
+}
 import type { RootStackParamList } from '../navigation/types';
 
 export default function ReportScreen() {
@@ -14,6 +22,7 @@ export default function ReportScreen() {
   const route = useRoute<RouteProp<RootStackParamList, 'Report'>>();
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reporting, setReporting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -72,13 +81,28 @@ export default function ReportScreen() {
             <View style={styles.block}>
               <Text style={styles.blockTitle}>Next steps</Text>
               {report.next_steps.map((item, i) => (
-                <Text key={i} style={styles.listItem}>• {item}</Text>
+                <Text key={i} style={styles.listItem}>• {nextStepText(item)}</Text>
               ))}
             </View>
           ) : null}
           <Text style={styles.disclaimer}>
             AI-generated feedback only. Not financial advice or a real investment offer.
           </Text>
+          <Pressable accessibilityRole="button" onPress={() => setReporting(true)} hitSlop={8}>
+            <Text style={styles.reportLink}>Report this AI feedback</Text>
+          </Pressable>
+          <ReportAiSheet
+            visible={reporting}
+            onClose={() => setReporting(false)}
+            content={[
+              report?.summary || session.summary || '',
+              ...(report?.risks || []).map((r) => `• ${r}`),
+            ]
+              .filter(Boolean)
+              .join('\n')}
+            sessionId={session.id}
+            source="report"
+          />
         </>
       )}
     </Screen>
@@ -100,4 +124,5 @@ const styles = StyleSheet.create({
   body: { color: '#334155', lineHeight: 22 },
   listItem: { color: '#334155', lineHeight: 22 },
   disclaimer: { color: colors.textMuted, fontSize: 12, lineHeight: 18 },
+  reportLink: { color: colors.primary, fontWeight: '700', fontSize: 13 },
 });

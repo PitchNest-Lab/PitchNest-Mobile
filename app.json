@@ -8,12 +8,11 @@
     "userInterfaceStyle": "automatic",
     "scheme": "pitchnest",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.pitchnest.app",
       "infoPlist": {
-        "NSCameraUsageDescription": "PitchNest uses your camera so AI investors can see you during live pitch practice.",
-        "NSMicrophoneUsageDescription": "PitchNest uses your microphone so you can speak to AI investors during pitch sessions.",
-        "NSPhotoLibraryUsageDescription": "PitchNest lets you upload pitch deck PDFs from your photo library.",
+        "NSCameraUsageDescription": "PitchNest can show a private camera preview while you practise, so you can check your eye contact and body language. Video is never recorded or sent.",
+        "NSMicrophoneUsageDescription": "PitchNest uses your microphone so you can speak your pitch to the AI investors and coach.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -28,6 +27,12 @@
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ]
     },
     "plugins": [
@@ -43,13 +48,19 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "PitchNest uses your camera during live pitch practice.",
-          "microphonePermission": "PitchNest uses your microphone during live pitch practice.",
+          "cameraPermission": "PitchNest can show a private camera preview while you practise, so you can check your eye contact and body language. Video is never recorded or sent.",
+          "microphonePermission": "PitchNest uses your microphone so you can speak your pitch to the AI investors and coach.",
           "recordAudioAndroid": true
         }
       ],
       "expo-sharing",
-      "expo-audio"
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "PitchNest uses your microphone so you can speak your pitch to the AI investors and coach.",
+          "enableBackgroundPlayback": false
+        }
+      ]
     ],
     "extra": {
       "eas": {

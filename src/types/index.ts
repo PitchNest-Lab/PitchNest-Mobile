@@ -42,12 +42,19 @@ export interface SessionScores {
   readiness?: number;
 }
 
+export interface NextStep {
+  title?: string;
+  desc?: string;
+  priority?: string;
+}
+
 export interface EvaluationReport {
   summary?: string;
   scores?: SessionScores;
   strengths?: string[];
   risks?: string[];
-  next_steps?: string[];
+  /** The backend sends objects; older sessions may hold plain strings. */
+  next_steps?: Array<string | NextStep>;
   transcript?: TranscriptEntry[];
   duration?: number;
 }

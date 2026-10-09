@@ -12,8 +12,9 @@ export default function SupportScreen() {
       <Pressable onPress={() => Linking.openURL(`mailto:${CONTACT_EMAIL}`)}>
         <Text style={{ color: '#0ea5e9', fontWeight: '800', fontSize: 16 }}>{CONTACT_EMAIL}</Text>
       </Pressable>
-      <LegalSection title="App Store review">
-        Start with a free account in-app. Upgrades are handled on the web at this time.
+      <LegalSection title="Reporting AI responses">
+        If an AI investor or report says something offensive, harmful, or wrong, tap Report under that message or at the
+        bottom of your report. Our team reviews every report.
       </LegalSection>
       <LegalSection title="Known limitations">
         {APP_NAME} mobile uses in-app deck viewing instead of screen sharing. Keep the app open during live pitches.

@@ -21,6 +21,8 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useRootNavigation } from '../hooks/useRootNavigation';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '../components/Button';
+import { ReportAiSheet } from '../components/ReportAiSheet';
+import { guessSpeechLocale } from '../lib/speechLocale';
 import { DeckSlideViewer, DeckSlideViewerRef } from '../components/DeckSlideViewer';
 import { env } from '../config/env';
 import { colors, radius, spacing } from '../constants/theme';
@@ -55,6 +57,7 @@ export default function LiveRoomScreen() {
   const [countdown, setCountdown] = useState(3);
   const [timeLeft, setTimeLeft] = useState(15 * 60);
   const [messages, setMessages] = useState<TranscriptEntry[]>([]);
+  const [reportTarget, setReportTarget] = useState<{ text: string; speaker?: string } | null>(null);
   const [chatInput, setChatInput] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [isMicMuted, setIsMicMuted] = useState(false);
@@ -208,11 +211,15 @@ export default function LiveRoomScreen() {
             Alert.alert('Session expired', 'Please log in again and restart your pitch.');
           } else if (data.code === 'PLAN_QUOTA_EXCEEDED') {
             // The quota is enforced server-side at client_ready, so it applies
-            // to this app too. There is no in-app purchase — upgrades happen on
-            // the web — so this only explains and exits.
+            // to this app too. The server's message mentions upgrading, but the
+            // app has no in-app purchase and store rules forbid pointing users
+            // to outside payment, so show a neutral message instead.
+            const resets = data.resetsAt ? new Date(data.resetsAt) : null;
             Alert.alert(
               'Weekly limit reached',
-              data.message || "You've used your free sessions for this week.",
+              resets && !Number.isNaN(resets.getTime())
+                ? `You've used this week's free practice sessions. Your sessions reset on ${resets.toLocaleDateString()}.`
+                : "You've used this week's free practice sessions. Please check back next week.",
             );
           } else {
             Alert.alert('Connection error', data.message || 'AI service unavailable');
@@ -299,6 +306,9 @@ export default function LiveRoomScreen() {
         type: 'client_ready',
         config: {
           ...pitchConfig,
+          // Regional English speech model (e.g. Nigerian English) so accented
+          // speech is recognised correctly; the server validates it.
+          speechLocale: guessSpeechLocale(),
           duration: 15,
           screenShareEnabled: false,
         },
@@ -468,6 +478,16 @@ export default function LiveRoomScreen() {
               <View style={[styles.bubble, item.type === 'user' ? styles.userBubble : styles.aiBubble]}>
                 {item.speaker ? <Text style={styles.speaker}>{item.speaker}</Text> : null}
                 <Text style={styles.bubbleText}>{item.text}</Text>
+                {item.type === 'ai' && item.speaker !== 'System' ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Report this AI response"
+                    hitSlop={8}
+                    onPress={() => setReportTarget({ text: item.text, speaker: item.speaker })}
+                  >
+                    <Text style={styles.reportLink}>Report</Text>
+                  </Pressable>
+                ) : null}
               </View>
             )}
           />
@@ -503,6 +523,13 @@ export default function LiveRoomScreen() {
           <Text style={styles.evalText}>Panel is grading your pitch…</Text>
         </View>
       )}
+      <ReportAiSheet
+        visible={!!reportTarget}
+        onClose={() => setReportTarget(null)}
+        content={reportTarget?.text || ''}
+        speaker={reportTarget?.speaker}
+        source="live"
+      />
     </SafeAreaView>
   );
 }
@@ -548,6 +575,7 @@ const styles = StyleSheet.create({
   aiBubble: { alignSelf: 'flex-start', backgroundColor: '#1e293b' },
   speaker: { color: '#bae6fd', fontSize: 10, fontWeight: '800', marginBottom: 4 },
   bubbleText: { color: '#fff', lineHeight: 20 },
+  reportLink: { color: '#94a3b8', fontSize: 11, fontWeight: '700', marginTop: 4, alignSelf: 'flex-end' },
   controls: { flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: spacing.sm },
   controlBtn: {
     backgroundColor: '#334155',
