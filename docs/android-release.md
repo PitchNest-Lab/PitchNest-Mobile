@@ -50,7 +50,7 @@ Only password reset, email verification, and public pitch-share URLs are routed 
 
 ## Release bundle
 
-1. Run `npm ci`, `npm run verify`, and `npm run android:sync`.
+1. Point `.env` at PROD: remove `VITE_API_URL` and `VITE_WS_BACKEND_URL` (`.env.example` sets them to DEV) and set the PROD `VITE_GOOGLE_CLIENT_ID`. Then run `npm ci`, `npm run verify`, and `npm run android:sync`.
 2. In Android Studio, select the release variant and generate a signed Android App Bundle (`.aab`). Keep the upload keystore outside this repository and in backed-up secret storage.
 3. Confirm R8 minification/resource shrinking succeeds, inspect the release bundle, and test the Play internal-testing build on a low-end physical Android device.
 4. Exercise microphone/camera permission denial and recovery, background/resume during a live pitch, interrupted connectivity, Android back behavior, password/verification links, sharing, and account deletion.
