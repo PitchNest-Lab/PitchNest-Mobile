@@ -1,26 +1,88 @@
 import React, {
   createContext,
-  useCallback,
   useContext,
-  useEffect,
-  useMemo,
-  useRef,
   useState,
-} from 'react';
-import { AppState } from 'react-native';
-import { apiPath } from '../config/env';
-import { authRequest, AuthTimeoutError } from '../lib/authApi';
-import { storage } from '../lib/storage';
-import type { User } from '../types';
+  useEffect,
+  useCallback,
+  useRef,
+} from "react";
+import Cookies from "js-cookie";
+import {
+  clearAuthSession,
+  getAuthToken,
+  getStoredUser,
+  storeAuthSession,
+  updateStoredToken,
+  updateStoredUser,
+} from "../lib/authStorage";
+import { isNativeApp } from "../lib/native";
+
+export type UserRole = "Founder" | "Investor" | "Advisor";
+
+/** Mirrors the backend entitlement tiers (see entitlementService.ts). */
+export type UserPlan = "free" | "prep" | "pro" | "founder" | "enterprise";
+
+export interface User {
+  id: number;
+  name: string;
+  email: string;
+  role?: UserRole;
+  bio?: string;
+  avatarUrl?: string | null;
+  settings?: Record<string, any>;
+  /** Paywall tier. Drives UI affordances only — the server re-checks every gate. */
+  plan?: UserPlan;
+  /**
+   * Trial state. These mirror exactly what the backend's toPublicUser() returns
+   * (authController.ts) — they used to be missing from this interface, which is
+   * why call sites read them through `as any`. The SERVER derives both the plan
+   * and the trial from the row on every request, so these are a snapshot; never
+   * treat them as the authority for anything that matters.
+   */
+  planExpiresAt?: string | null;
+  isTrial?: boolean;
+  trialDaysRemaining?: number;
+  trialExpiresAt?: string | null;
+  onboardingCompleted?: boolean;
+  orgCode?: number | string;
+  accountType?: "user" | "organization";
+  authProvider?: "form" | "google";
+}
+
+function safeParse<T = any>(value: string | null): T | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
+  login: (
+    email: string,
+    password: string,
+    rememberMe?: boolean,
+  ) => Promise<void>;
+  orgLogin: (
+    email: string,
+    password: string,
+    rememberMe?: boolean,
+  ) => Promise<void>;
+  loginWithGoogle: (credential: string, rememberMe?: boolean) => Promise<any>;
+  signup: (
+    name: string,
+    email: string,
+    password: string,
+    role?: UserRole,
+  ) => Promise<any>;
+  logout: () => void;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (name: string, email: string, password: string) => Promise<void>;
-  logout: () => Promise<void>;
-  authFetch: (path: string, options?: RequestInit) => Promise<Response>;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  /** Re-reads /api/auth/me. Use after an out-of-band change like a payment. */
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -29,128 +91,334 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const tokenRef = useRef<string | null>(null);
 
-  const clearSession = useCallback(async () => {
-    tokenRef.current = null;
+  // ── Sliding session ──
+  // Tokens expire 24h after issue (30d with "Keep me logged in"). While the
+  // user is actually using the app we swap the token for a fresh one, so the
+  // session only ends after real inactivity — not mid-use.
+  const lastActivityRef = useRef(Date.now());
+  const lastRefreshRef = useRef(0);
+
+  const refreshSession = useCallback(async (currentToken: string) => {
+    try {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${currentToken}` },
+      });
+      // An expired/invalid token is logged out by the /me and 401 paths.
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      if (data?.token) {
+        lastRefreshRef.current = Date.now();
+        updateStoredToken(data.token);
+        setToken(data.token);
+      }
+    } catch {
+      // Network error — the next interval tick will retry
+    }
+  }, []);
+
+  useEffect(() => {
+    const markActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+    window.addEventListener("click", markActivity);
+    window.addEventListener("keydown", markActivity);
+    document.addEventListener("visibilitychange", markActivity);
+
+    const interval = setInterval(
+      () => {
+        const currentToken = getAuthToken();
+        if (!currentToken) return;
+        // Only slide the window if the user did something since last refresh
+        if (lastActivityRef.current <= lastRefreshRef.current) return;
+        refreshSession(currentToken);
+      },
+      30 * 60 * 1000,
+    );
+
+    return () => {
+      window.removeEventListener("click", markActivity);
+      window.removeEventListener("keydown", markActivity);
+      document.removeEventListener("visibilitychange", markActivity);
+      clearInterval(interval);
+    };
+  }, [refreshSession]);
+
+  useEffect(() => {
+    const storedUser = getStoredUser();
+    const storedToken = getAuthToken();
+
+    if (!storedUser || !storedToken) {
+      // Clean up a half-session left by an interrupted write or an old build.
+      clearAuthSession();
+      setIsLoading(false);
+      return;
+    }
+
+    fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${storedToken}` },
+    })
+      .then(async (res) => {
+        if (res.ok) {
+          const stored = safeParse<User>(storedUser);
+          const fresh = await res.json().catch(() => null);
+          const merged = { ...(stored || {}), ...(fresh || {}) } as User;
+          if (!merged.id) {
+            clearAuthSession();
+            return;
+          }
+          setUser(merged);
+          setToken(storedToken);
+          updateStoredUser(merged);
+          window.dispatchEvent(new Event("userUpdate"));
+          // Returning user is clearly active — restart their expiry window now
+          refreshSession(storedToken);
+        } else if (res.status === 401 || res.status === 403) {
+          // Token expired, revoked or no longer eligible — clear everything.
+          clearAuthSession();
+        } else {
+          // A provider/database outage is not evidence that the credential is
+          // invalid. Keep the local snapshot and let protected APIs fail with
+          // their real 5xx until the service recovers.
+          const stored = safeParse<User>(storedUser);
+          if (stored?.id) {
+            setUser(stored);
+            setToken(storedToken);
+          }
+        }
+      })
+      .catch(() => {
+        // Network error — retain the last server-issued identity snapshot.
+        const stored = safeParse<User>(storedUser);
+        if (stored?.id) {
+          setUser(stored);
+          setToken(storedToken);
+        }
+      })
+      .finally(() => setIsLoading(false));
+  }, [refreshSession]);
+
+  const login = async (email: string, password: string, rememberMe = false) => {
+    const persistent = rememberMe || isNativeApp();
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, rememberMe: persistent }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || data.message || "Login failed");
+
+    storeAuthSession(data.user, data.token, persistent);
+    setUser(data.user);
+    setToken(data.token);
+  };
+  const orgLogin = async (
+    email: string,
+    password: string,
+    rememberMe = false,
+  ) => {
+    const res = await fetch("/api/auth/organization-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, rememberMe }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || data.message || "Login failed");
+
+    storeAuthSession(data.user, data.token, rememberMe);
+    setUser(data.user);
+    setToken(data.token);
+  };
+
+  const signup = async (
+    name: string,
+    email: string,
+    password: string,
+    role?: UserRole,
+  ) => {
+    const referralCode = Cookies.get("code")?.trim();
+    const res = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        email,
+        password,
+        role,
+        ...(referralCode ? { referralCode } : {}),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || data.error || "Signup failed");
+    if (referralCode) Cookies.remove("code");
+
+    // Signup no longer logs the user in: the backend requires email
+    // verification first and returns NO token (requiresVerification: true).
+    // Only establish a session if a token is actually present (defensive — keeps
+    // this working if the contract ever changes back). Otherwise leave the user
+    // logged out; SignupPage routes to /verify.
+    if (data?.token) {
+      storeAuthSession(data.user, data.token, false);
+      setUser(data.user);
+      setToken(data.token);
+    }
+    return data;
+  };
+
+  const loginWithGoogle = async (credential: string, rememberMe = false) => {
+    const persistent = rememberMe || isNativeApp();
+    const referralCode = Cookies.get("code")?.trim();
+    const res = await fetch("/api/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        credential,
+        rememberMe: persistent,
+        ...(referralCode ? { referralCode } : {}),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok)
+      throw new Error(data.message || data.error || "Google sign-in failed");
+    if (referralCode) Cookies.remove("code");
+
+    storeAuthSession(data.user, data.token, persistent);
+    setUser(data.user);
+    setToken(data.token);
+    return data;
+  };
+
+  const logout = () => {
+    const currentToken = token || getAuthToken();
+    if (currentToken) {
+      void fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${currentToken}` },
+        // Let the auth-version revocation reach the server even if logout is
+        // followed immediately by navigation or the tab closing.
+        keepalive: true,
+      }).catch(() => undefined);
+    }
     setUser(null);
     setToken(null);
-    await storage.clearAuth();
-  }, []);
+    clearAuthSession();
+    if (isNativeApp()) {
+      void import("@capawesome/capacitor-google-sign-in")
+        .then(({ GoogleSignIn }) => GoogleSignIn.signOut())
+        .catch(() => undefined);
+    }
+  };
 
-  const persistSession = useCallback(async (nextUser: User, nextToken: string) => {
-    tokenRef.current = nextToken;
-    setUser(nextUser);
-    setToken(nextToken);
-    await Promise.all([storage.setUserJson(nextUser), storage.setToken(nextToken)]);
-  }, []);
-
-  const validateToken = useCallback(async (storedToken: string) => {
-    const res = await authRequest('/api/auth/me', {
-      headers: { Authorization: `Bearer ${storedToken}` },
-    });
-    return res.ok;
-  }, []);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        const storedToken = await storage.getToken();
-        const storedUser = await storage.getUserJson();
-        if (!storedToken || !storedUser) return;
-
-        tokenRef.current = storedToken;
-        setToken(storedToken);
-        setUser(storedUser);
-
-        validateToken(storedToken)
-          .then((valid) => {
-            if (!valid) clearSession();
-          })
-          .catch(() => {});
-      } finally {
-        setIsLoading(false);
-      }
-    })();
-  }, [clearSession, validateToken]);
-
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', async (state) => {
-      if (state !== 'active' || !tokenRef.current) return;
-      try {
-        const valid = await validateToken(tokenRef.current);
-        if (!valid) await clearSession();
-      } catch {
-        // ignore offline
-      }
-    });
-    return () => sub.remove();
-  }, [clearSession, validateToken]);
-
-  const login = useCallback(
-    async (email: string, password: string) => {
-      try {
-        const res = await authRequest('/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Login failed');
-        await persistSession(data.user, data.token);
-      } catch (err) {
-        if (err instanceof AuthTimeoutError) throw err;
-        throw err instanceof Error ? err : new Error('Login failed');
-      }
-    },
-    [persistSession]
-  );
-
-  const signup = useCallback(
-    async (name: string, email: string, password: string) => {
-      try {
-        const res = await authRequest('/api/auth/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Signup failed');
-        await persistSession(data.user, data.token);
-      } catch (err) {
-        if (err instanceof AuthTimeoutError) throw err;
-        throw err instanceof Error ? err : new Error('Signup failed');
-      }
-    },
-    [persistSession]
-  );
-
-  const logout = useCallback(async () => {
-    await clearSession();
-  }, [clearSession]);
-
+  /**
+   * Authenticated fetch wrapper — automatically attaches the JWT Bearer token
+   * to all API requests. Use this instead of raw fetch() for protected endpoints.
+   */
   const authFetch = useCallback(
-    async (path: string, options: RequestInit = {}) => {
-      const currentToken = tokenRef.current || (await storage.getToken());
+    async (url: string, options: RequestInit = {}): Promise<Response> => {
+      const currentToken = token || getAuthToken();
+
       const headers = new Headers(options.headers || {});
-      if (currentToken) headers.set('Authorization', `Bearer ${currentToken}`);
-      const res = await fetch(apiPath(path), { ...options, headers });
-      if (res.status === 401) await clearSession();
+      if (currentToken) {
+        headers.set("Authorization", `Bearer ${currentToken}`);
+      }
+
+      const res = await fetch(url, { ...options, headers });
+
+      // If token expired or invalid, force logout
+      if (res.status === 401) {
+        setUser(null);
+        setToken(null);
+        clearAuthSession();
+      }
+
       return res;
     },
-    [clearSession]
+    [token],
   );
 
-  const value = useMemo(
-    () => ({ user, token, isLoading, login, signup, logout, authFetch }),
-    [user, token, isLoading, login, signup, logout, authFetch]
+  // Refetch user data when the window regains focus so pages show live data
+  useEffect(() => {
+    const onFocus = () => {
+      const currentToken = getAuthToken();
+      if (!currentToken) return;
+      fetch("/api/auth/me", {
+        headers: { Authorization: `Bearer ${currentToken}` },
+      })
+        .then(async (res) => {
+          if (res.status === 401 || res.status === 403) {
+            setUser(null);
+            setToken(null);
+            clearAuthSession();
+            return;
+          }
+          if (!res.ok) return;
+          const fresh = await res.json().catch(() => null);
+          if (!fresh?.id) return;
+          const stored = safeParse<User>(getStoredUser());
+          const merged = { ...(stored || {}), ...fresh } as User;
+          setUser(merged);
+          updateStoredUser(merged);
+          window.dispatchEvent(new Event("userUpdate"));
+        })
+        .catch(() => {}); // Ignore network errors silently
+    };
+
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  /**
+   * Re-reads the user from /api/auth/me on demand.
+   *
+   * Needed because the plan can change without any navigation or focus event —
+   * a checkout return, or a webhook settling seconds after payment. Same
+   * merge semantics as the focus refresh: fresh server fields win over the
+   * stored copy.
+   */
+  const refreshUser = useCallback(async () => {
+    const currentToken = getAuthToken();
+    if (!currentToken) return;
+    try {
+      const res = await fetch("/api/auth/me", {
+        headers: { Authorization: `Bearer ${currentToken}` },
+      });
+      if (!res.ok) return;
+      const fresh = await res.json().catch(() => null);
+      if (!fresh?.id) return;
+      const stored = safeParse<User>(getStoredUser());
+      const merged = { ...(stored || {}), ...fresh } as User;
+      setUser(merged);
+      updateStoredUser(merged);
+      window.dispatchEvent(new Event("userUpdate"));
+    } catch {
+      // Network blip — keep the current user rather than logging them out.
+    }
+  }, []);
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        token,
+        login,
+        loginWithGoogle,
+        signup,
+        logout,
+        isLoading,
+        authFetch,
+        refreshUser,
+        orgLogin,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
   );
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
-}
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined)
+    throw new Error("useAuth must be used within an AuthProvider");
+  return context;
+};
